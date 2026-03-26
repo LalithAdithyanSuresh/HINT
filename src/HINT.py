@@ -304,7 +304,7 @@ class HINT():
         gt = gt.cpu().detach().numpy().astype(np.uint8)[0]
 
         psnr = min(100, compare_psnr(gt, pre))
-        ssim = compare_ssim(gt, pre, multichannel=True, data_range=255)
+        ssim = compare_ssim(gt, pre, channel_axis=-1, data_range=255)
 
         return psnr, ssim
     

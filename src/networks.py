@@ -294,7 +294,7 @@ class Downsample(nn.Module):
         out = self.body(x)
         out_mask = self.body2(mask)
         b,n,h,w = out.shape
-        t = torch.zeros((b,2*n,h,w)).cuda()
+        t = torch.zeros((b,2*n,h,w)).to(out.device)
         for i in range(n):
             t[:,2*i,:,:] = out[:,i,:,:]
         for i in range(n):

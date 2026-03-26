@@ -189,7 +189,7 @@ class InpaintingModel(BaseModel):
 
 def abs_smooth(x):
     absx = torch.abs(x)
-    minx = torch.min(absx,other=torch.ones(absx.shape).cuda())
+    minx = torch.min(absx,other=torch.ones(absx.shape).to(absx.device))
     r = 0.5 *((absx-1)*minx + absx)
     return r
 

@@ -189,7 +189,9 @@ class HINT():
 
         test_loader = DataLoader(
             dataset=self.test_dataset,
-            batch_size=1,
+            batch_size=self.config.BATCH_SIZE,
+            num_workers=4,
+            shuffle=False
         )
         
         psnr_list = []

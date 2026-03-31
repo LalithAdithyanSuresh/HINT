@@ -84,6 +84,7 @@ def load_config(mode=None):
         parser.add_argument('--output', type=str, help='path to the output directory')
         parser.add_argument('--gpu', type=str, help='gpu ids (default: from config)')
         parser.add_argument('--cpu', action='store_true', help='force cpu mode')
+        parser.add_argument('--batch_size', type=int, help='batch size for inference')
 
     args = parser.parse_args()
     config_path = os.path.join(args.path, 'config.yml')
@@ -127,6 +128,9 @@ def load_config(mode=None):
         if args.cpu:
             config.DEVICE = torch.device('cpu')
             config.GPU = []
+
+        if args.batch_size is not None:
+            config.BATCH_SIZE = args.batch_size
 
 
     return config

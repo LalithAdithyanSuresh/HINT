@@ -12,6 +12,8 @@ def run():
     parser.add_argument("--celeba_dir", type=str, required=True, help="Path to the CelebA dataset (images).")
     parser.add_argument("--mask_dir", type=str, default=None, help="Path to the irregular mask dataset.")
     parser.add_argument("--num_samples", type=int, default=50, help="Number of images to sample.")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for inference.")
+    parser.add_argument("--celeba_test_split", type=int, default=182638, help="Starting ID for the official CelebA test split.")
     parser.add_argument("--gpu", type=str, default="0", help="GPU ID(s) to use (e.g., '0' or '0,1').")
     parser.add_argument("--cpu", action="store_true", help="Force CPU mode.")
     parser.add_argument("--output_inputs", type=str, default="./test_inputs", help="Temp input directory.")
@@ -31,6 +33,14 @@ def run():
                 os.remove(f)
 
     all_images = glob.glob(os.path.join(args.celeba_dir, "*.jpg")) + glob.glob(os.path.join(args.celeba_dir, "*.png"))
+    
+    # Optional filtering for CelebA test split (assuming numbered filenames)
+    if args.celeba_test_split > 0:
+        def get_id(path):
+            try: return int(os.path.basename(path).split(".")[0])
+            except: return -1
+        all_images = [f for f in all_images if get_id(f) >= args.celeba_test_split]
+
     if not all_images:
         print(f"Error: No images found in {args.celeba_dir}.")
         return
@@ -92,7 +102,7 @@ def run():
     if args.cpu:
         cmd.append("--cpu")
     else:
-        cmd.extend(["--gpu", args.gpu])
+        cmd.extend(["--gpu", args.gpu, "--batch_size", str(args.batch_size)])
 
     print(f"Running command: {' '.join(cmd)}")
     try:

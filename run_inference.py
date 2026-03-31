@@ -36,7 +36,10 @@ def run():
         return
 
     random.shuffle(all_images)
-    num_samples = min(args.num_samples, len(all_images))
+    if args.num_samples == -1:
+        num_samples = len(all_images)
+    else:
+        num_samples = min(args.num_samples, len(all_images))
     sampled_images = all_images[:num_samples]
 
     print(f"Sampled {len(sampled_images)} images. Preparing masks...")

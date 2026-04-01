@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from .dataset import Dataset
-from .models import InpaintingModel
+from .models import InpaintingModel, LandmarkDetectorModel
 from .utils import Progbar, create_dir, stitch_images, imsave
 from .metrics import PSNR
 from cv2 import circle
@@ -34,6 +34,8 @@ class HINT():
         self.model_name = model_name
 
         self.inpaint_model = InpaintingModel(config).to(config.DEVICE)
+        self.landmark_model = LandmarkDetectorModel(config).to(config.DEVICE) if config.USE_LANDMARKS else None
+
         self.transf = torchvision.transforms.Compose(
             [
                 torchvision.transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])])
@@ -46,13 +48,16 @@ class HINT():
         if self.config.MODE == 1:
 
             if self.config.MODEL == 2:
-                self.train_dataset = Dataset(config, config.TRAIN_INPAINT_IMAGE_FLIST, config.TRAIN_MASK_FLIST, augment=True, training=True)
+                self.train_dataset = Dataset(config, config.TRAIN_INPAINT_IMAGE_FLIST, config.TRAIN_MASK_FLIST, 
+                                             landmark_flist=config.TRAIN_LANDMARK_LANDMARK_FLIST if config.USE_LANDMARKS else None,
+                                             augment=True, training=True)
 
         # test mode
         if self.config.MODE == 2:
             if self.config.MODEL == 2:
                 print('model == 2')
                 self.test_dataset = Dataset(config, config.TEST_INPAINT_IMAGE_FLIST, config.TEST_MASK_FLIST,
+                                            landmark_flist=config.TEST_LANDMARK_LANDMARK_FLIST if config.USE_LANDMARKS else None,
                                             augment=False, training=False)
 
 
@@ -71,11 +76,15 @@ class HINT():
 
         if self.config.MODEL == 2:
             self.inpaint_model.load()
+            if self.landmark_model is not None:
+                self.landmark_model.load()
 
 
     def save(self):
         if self.config.MODEL == 2:
             self.inpaint_model.save()
+            if self.landmark_model is not None:
+                self.landmark_model.save()
 
 
     def train(self):
@@ -104,11 +113,19 @@ class HINT():
             for items in train_loader:
 
                 self.inpaint_model.train()
-                if model == 2:
-                    images, masks = self.cuda(*items)
-                # inpaint model
+                if self.landmark_model is not None:
+                    self.landmark_model.train()
 
-                    outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss= self.inpaint_model.process(images,masks)
+                if model == 2:
+                    if self.config.USE_LANDMARKS:
+                        images, landmarks_gt, masks = self.cuda(*items)
+                        landmark_map = self.generate_landmark_map(landmarks_gt)
+                    else:
+                        images, masks = self.cuda(*items)
+                        landmark_map = None
+
+                    # inpaint model
+                    outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss= self.inpaint_model.process(images, landmark_map, masks)
                     outputs_merged = (outputs_img * masks) + (images * (1-masks))
 
                     psnr = self.psnr(self.postprocess(images), self.postprocess(outputs_merged))
@@ -189,7 +206,7 @@ class HINT():
 
         test_loader = DataLoader(
             dataset=self.test_dataset,
-            batch_size=1,
+            batch_size=self.config.BATCH_SIZE,
         )
         
         psnr_list = []
@@ -200,80 +217,87 @@ class HINT():
         print('here')
         index = 0
         for items in test_loader:
-            images, masks = self.cuda(*items)
-            index += 1
-
+            if self.config.USE_LANDMARKS:
+                images, landmarks_gt, masks = self.cuda(*items)
+            else:
+                images, masks = self.cuda(*items)
+            
             # inpaint model
             if model == 2:
-
+                if self.config.USE_LANDMARKS:
+                    # Predict landmarks if in joint mode (Stage 3 logic basically)
+                    if self.landmark_model is not None:
+                        landmark_pred = self.landmark_model(images, masks)
+                        landmark_pred = landmark_pred.reshape(-1, self.config.LANDMARK_POINTS, 2).long()
+                        landmark_map = self.generate_landmark_map(landmark_pred)
+                    else:
+                        landmark_map = self.generate_landmark_map(landmarks_gt)
+                else:
+                    landmark_map = None
 
                 inputs = (images * (1 - masks))
                 with torch.no_grad():
                     tsince = int(round(time.time()*1000))
-                    outputs_img = self.inpaint_model(images, masks)
+                    outputs_img = self.inpaint_model(images, landmark_map, masks)
                     ttime_elapsed = int(round(time.time()*1000))-tsince
-                    print('test time elaspsed {}ms'.format(ttime_elapsed))
+                    print('test batch time elapsed {}ms'.format(ttime_elapsed))
+                
                 outputs_merged = (outputs_img * masks) + (images * (1 - masks))
                 
-                psnr, ssim = self.metric(images, outputs_merged)
-                psnr_list.append(psnr)
-                ssim_list.append(ssim)
-                
-                if torch.cuda.is_available():
-                    pl = self.loss_fn_vgg(self.transf(outputs_merged[0].cpu()).cuda(), self.transf(images[0].cpu()).cuda()).item()
-                    lpips_list.append(pl)
-                else:
-                    pl = self.loss_fn_vgg(self.transf(outputs_merged[0].cpu()), self.transf(images[0].cpu())).item()
+                # Loop through each sample in the batch
+                batch_size = images.shape[0]
+                for i in range(batch_size):
+                    sample_psnr, sample_ssim = self.metric(images[i], outputs_merged[i])
+                    psnr_list.append(sample_psnr)
+                    ssim_list.append(sample_ssim)
+                    
+                    if torch.cuda.is_available():
+                        pl = self.loss_fn_vgg(self.transf(outputs_merged[i].cpu().unsqueeze(0)).cuda(), 
+                                             self.transf(images[i].cpu().unsqueeze(0)).cuda()).item()
+                    else:
+                        pl = self.loss_fn_vgg(self.transf(outputs_merged[i].cpu().unsqueeze(0)), 
+                                             self.transf(images[i].cpu().unsqueeze(0))).item()
                     lpips_list.append(pl)                
-                
-                l1_loss = torch.nn.functional.l1_loss(outputs_merged, images, reduction='mean').item()
-                l1_list.append(l1_loss)
+                    
+                    l1_loss = torch.nn.functional.l1_loss(outputs_merged[i], images[i], reduction='mean').item()
+                    l1_list.append(l1_loss)
 
-                print("psnr:{}/{}  ssim:{}/{} l1:{}/{}  lpips:{}/{}  {}".format(psnr, np.average(psnr_list),
-                                                                                ssim, np.average(ssim_list),
-                                                                                l1_loss, np.average(l1_list),
-                                                                                pl, np.average(lpips_list),
-                                                                                len(ssim_list)))
+                    sample_name = self.test_dataset.load_name(index * self.config.BATCH_SIZE + i)[:-4] + '.png'
+                    print("Sample {}: psnr:{:.2f} ssim:{:.4f} l1:{:.4f} lpips:{:.4f} {}".format(
+                        sample_name, sample_psnr, sample_ssim, l1_loss, pl, len(ssim_list)))
 
-                images_joint = stitch_images(
-                    self.postprocess(images),
-                    self.postprocess(inputs),
-                    self.postprocess(outputs_img),
-                    self.postprocess(outputs_merged),
-                    img_per_row=1
-                )
+                    # Save individual results
+                    path_masked = os.path.join(self.results_path, self.model_name, 'masked')
+                    path_result = os.path.join(self.results_path, self.model_name, 'result')
+                    create_dir(path_masked)
+                    create_dir(path_result)
 
-                path_masked = os.path.join(self.results_path,self.model_name,'masked4060')
-                path_result = os.path.join(self.results_path, self.model_name,'result4060')
-                path_joint = os.path.join(self.results_path,self.model_name,'joint4060')
+                    masked_img_i = self.postprocess((images[i] * (1 - masks[i]) + masks[i]).unsqueeze(0))[0]
+                    result_img_i = self.postprocess(outputs_merged[i].unsqueeze(0))[0]
+                    
+                    imsave(masked_img_i, os.path.join(path_masked, sample_name))
+                    imsave(result_img_i, os.path.join(path_result, sample_name))
 
+                # Batch visualization logic if needed
+                if self.debug or index % 10 == 0:
+                    images_joint = stitch_images(
+                        self.postprocess(images),
+                        self.postprocess(inputs),
+                        self.postprocess(outputs_img),
+                        self.postprocess(outputs_merged),
+                        img_per_row=1
+                    )
+                    path_joint = os.path.join(self.results_path, self.model_name, 'joint')
+                    create_dir(path_joint)
+                    joint_name = 'batch_{:04d}.png'.format(index)
+                    images_joint.save(os.path.join(path_joint, joint_name))
 
-                name = self.test_dataset.load_name(index-1)[:-4]+'.png'
+            index += 1
 
-                create_dir(path_masked)
-                create_dir(path_result)
-                create_dir(path_joint)
-
-                masked_images = self.postprocess(images*(1-masks)+masks)[0]
-                images_result = self.postprocess(outputs_merged)[0]
-
-                print(os.path.join(path_joint,name[:-4]+'.png'))
-
-                images_joint.save(os.path.join(path_joint,name[:-4]+'.png'))
-                imsave(masked_images,os.path.join(path_masked,name))
-                imsave(images_result,os.path.join(path_result,name))
-
-                print(name + ' complete!')
-
-            # inpaint with joint model
-        torch.onnx.export(model, images_joint, 'model.onnx')
-        wandb.save('model.onnx')
         print('\nEnd Testing')
-        
-        print('edge_psnr_ave:{} edge_ssim_ave:{} l1_ave:{} lpips:{}'.format(np.average(psnr_list),
-                                                                                 np.average(ssim_list),
-                                                                                 np.average(l1_list),
-                                                                                 np.average(lpips_list)))
+        print('Average PSNR: {:.4f}, SSIM: {:.4f}, L1: {:.4f}, LPIPS: {:.4f}'.format(
+            np.average(psnr_list), np.average(ssim_list), np.average(l1_list), np.average(lpips_list)))
+
 
 
 
@@ -293,15 +317,28 @@ class HINT():
         img = img.permute(0, 2, 3, 1)
         return img.int()
 
+    def generate_landmark_map(self, landmark_cord):
+        img_size = self.config.INPUT_SIZE
+        if torch.is_tensor(landmark_cord):
+            if landmark_cord.ndimension() == 3:
+                landmark_img = torch.zeros(landmark_cord.shape[0], 1, img_size, img_size).to(landmark_cord.device)
+                for i in range(landmark_cord.shape[0]):
+                    # clamp coordinates to be within grid
+                    l_y = landmark_cord[i, :, 1].clamp(0, img_size - 1)
+                    l_x = landmark_cord[i, :, 0].clamp(0, img_size - 1)
+                    landmark_img[i, 0, l_y, l_x] = 1
+            elif landmark_cord.ndimension() == 2:
+                landmark_img = torch.zeros(1, img_size, img_size).to(landmark_cord.device)
+                l_y = landmark_cord[:, 1].clamp(0, img_size - 1)
+                l_x = landmark_cord[:, 0].clamp(0, img_size - 1)
+                landmark_img[0, l_y, l_x] = 1
+        return landmark_img
+
 
     def metric(self, gt, pre):
-        pre = pre.clamp_(0, 1) * 255.0
-        pre = pre.permute(0, 2, 3, 1)
-        pre = pre.detach().cpu().numpy().astype(np.uint8)[0]
-
-        gt = gt.clamp_(0, 1) * 255.0
-        gt = gt.permute(0, 2, 3, 1)
-        gt = gt.cpu().detach().numpy().astype(np.uint8)[0]
+        # gt and pre are [C, H, W] tensors
+        pre = (pre.clamp(0, 1) * 255.0).permute(1, 2, 0).detach().cpu().numpy().astype(np.uint8)
+        gt = (gt.clamp(0, 1) * 255.0).permute(1, 2, 0).cpu().detach().numpy().astype(np.uint8)
 
         psnr = min(100, compare_psnr(gt, pre))
         ssim = compare_ssim(gt, pre, channel_axis=-1, data_range=255)

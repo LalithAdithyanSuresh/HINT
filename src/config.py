@@ -57,4 +57,13 @@ DEFAULT_CONFIG = {
     'SAMPLE_SIZE': 12,              # number of images to sample
     'EVAL_INTERVAL': 0,             # how many iterations to wait before model evaluation (0: never)
     'LOG_INTERVAL': 10,             # how many iterations to wait before logging training status (0: never)
+
+    'USE_LANDMARKS': 1,             # 0: false, 1: true
+    'LANDMARK_POINTS': 68,          # 68: celebA, 98: wflw
+    'TRAIN_LANDMARK_IMAGE_FLIST': None,
+    'TRAIN_LANDMARK_LANDMARK_FLIST': None,
+    'VAL_LANDMARK_IMAGE_FLIST': None,
+    'VAL_LANDMARK_LANDMARK_FLIST': None,
+    'TEST_LANDMARK_IMAGE_FLIST': None,
+    'TEST_LANDMARK_LANDMARK_FLIST': None,
 }

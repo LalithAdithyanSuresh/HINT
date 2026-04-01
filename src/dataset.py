@@ -17,7 +17,7 @@ import cv2
 from skimage.feature import canny
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, config, flist, mask_flist, augment=True, training=True):
+    def __init__(self, config, flist, mask_flist, landmark_flist=None, augment=True, training=True):
         super(Dataset, self).__init__()
         self.config = config
         self.augment = augment
@@ -25,6 +25,7 @@ class Dataset(torch.utils.data.Dataset):
 
         self.data = self.load_flist(flist)
         self.mask_data = self.load_flist(mask_flist)
+        self.landmark_data = self.load_flist(landmark_flist) if landmark_flist is not None else []
 
         self.input_size = config.INPUT_SIZE
         self.mask = config.MASK
@@ -50,15 +51,32 @@ class Dataset(torch.utils.data.Dataset):
         # load image
         img = imread(self.data[index])
 
+        # load landmarks if available
+        landmark = None
+        if len(self.landmark_data) > 0:
+            if self.config.MODEL != 3: # Not in joint inference mode
+                landmark = self.load_lmk([size, size], index, img.shape)
+            else:
+                landmark = np.zeros((self.config.LANDMARK_POINTS, 2))
+
+        # resize image
         if size != 0:
             img = self.resize(img, size, size, centerCrop=True)
-
-
 
         # load mask
         mask = self.load_mask(img, index)
 
+        # augment data
+        if self.augment and np.random.binomial(1, 0.5) > 0:
+            img = img[:, ::-1, ...]
+            mask = mask[:, ::-1, ...]
+            if landmark is not None:
+                landmark[:, 0] = self.input_size - landmark[:, 0]
+                landmark = self.shuffle_lr(landmark)
 
+        if landmark is not None:
+            return self.to_tensor(img), torch.from_numpy(landmark).long(), self.to_tensor(mask)
+        
         return self.to_tensor(img), self.to_tensor(mask)
 
 
@@ -179,7 +197,26 @@ class Dataset(torch.utils.data.Dataset):
             for item in sample_loader:
                 yield item
 
+    def shuffle_lr(self, parts, pairs=None):
+        if pairs is None:
+            if self.config.LANDMARK_POINTS == 68:
+                pairs = [16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+                     26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 27, 28, 29, 30, 35,
+                     34, 33, 32, 31, 45, 44, 43, 42, 47, 46, 39, 38, 37, 36, 41,
+                     40, 54, 53, 52, 51, 50, 49, 48, 59, 58, 57, 56, 55, 64, 63,
+                     62, 61, 60, 67, 66, 65]
+            elif self.config.LANDMARK_POINTS == 98:
+                pairs = [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9,
+                         8, 7, 6, 5, 4, 3, 2, 1, 0, 46, 45, 44, 43, 42, 50, 49, 48, 47, 37, 36, 35, 34, 33, 41, 40, 39,
+                         38, 51, 52, 53, 54, 59, 58, 57, 56, 55, 72, 71, 70, 69, 68, 75, 74, 73, 64, 63, 62, 61, 60, 67,
+                         66, 65, 82, 81, 80, 79, 78, 77, 76, 87, 86, 85, 84, 83, 92, 91, 90, 89, 88, 95, 94, 93, 97, 96]
 
+        if len(parts.shape) == 3:
+            parts = parts[:,pairs,...]
+        else:
+            parts = parts[pairs,...]
+
+        return parts
 
 
 def image_transforms(load_size):

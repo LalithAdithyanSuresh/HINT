@@ -322,7 +322,7 @@ class Upsample(nn.Module):
 ##---------- HINT -----------------------
 class HINT(nn.Module):
     def __init__(self,
-                 inp_channels=4,
+                 inp_channels=5,
                  out_channels=3,
                  dim=48,
                  num_blocks=[4, 6, 6, 8],
@@ -378,9 +378,14 @@ class HINT(nn.Module):
                                     )        
 
 
-    def forward(self, inp_img, mask_whole, mask_half, mask_quarter,mask_tiny):
+    def forward(self, inp_img, mask_whole, mask_half, mask_quarter, mask_tiny, landmark_map=None):
         
-        inp_enc_level1 = self.patch_embed(torch.cat((inp_img,mask_whole),dim=1))
+        if landmark_map is not None:
+            input_data = torch.cat((inp_img, mask_whole, landmark_map), dim=1)
+        else:
+            input_data = torch.cat((inp_img, mask_whole), dim=1)
+
+        inp_enc_level1 = self.patch_embed(input_data)
 
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
 
@@ -415,6 +420,244 @@ class HINT(nn.Module):
 
         out_dec_level1 = (torch.tanh(out_dec_level1) + 1) / 2
         return out_dec_level1
+
+
+##########################################################################
+## MobileNetV2 for Landmark Detection (Ported from LaFIn)
+def conv_bn(inp, oup, stride):
+    return nn.Sequential(
+        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.ReLU6(inplace=True)
+    )
+
+
+def conv_1x1_bn(inp, oup):
+    return nn.Sequential(
+        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.ReLU6(inplace=True)
+    )
+
+
+class InvertedResidual(nn.Module):
+    def __init__(self, inp, oup, stride, expand_ratio):
+        super(InvertedResidual, self).__init__()
+        self.stride = stride
+        assert stride in [1, 2]
+
+        hidden_dim = round(inp * expand_ratio)
+        self.use_res_connect = self.stride == 1 and inp == oup
+
+        if expand_ratio == 1:
+            self.conv = nn.Sequential(
+                # dw
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(oup),
+            )
+        else:
+            self.conv = nn.Sequential(
+                # pw
+                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # dw
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(oup),
+            )
+
+    def forward(self, x):
+        if self.use_res_connect:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
+
+
+class MobileNetV2(nn.Module):
+    def __init__(self, input_size=256, width_mult=1., points_num=68):
+        super(MobileNetV2, self).__init__()
+        block = InvertedResidual
+        input_channel = 32
+        last_channel = 1280
+        inverted_residual_setting = [
+            # t, c, n, s
+            [1, 16, 1, 1],
+            [6, 24, 2, 2],
+            [6, 32, 3, 2],
+            [6, 64, 4, 2],
+            [6, 96, 3, 1],
+            [6, 160, 3, 2],
+            [6, 320, 1, 1],
+        ]
+
+        input_channel = int(input_channel * width_mult)
+        self.last_channel = int(last_channel * width_mult) if width_mult > 1.0 else last_channel
+        self.features = [conv_bn(3, input_channel, 2)]
+        for t, c, n, s in inverted_residual_setting:
+            output_channel = int(c * width_mult)
+            for i in range(n):
+                if i == 0:
+                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t))
+                else:
+                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t))
+                input_channel = output_channel
+
+        self.features = nn.Sequential(*self.features)
+        self.last_block = conv_1x1_bn(input_channel, self.last_channel)
+
+        self.conv1_after_mbnet = nn.Conv2d(1280, 64, (1, 1))
+        self.conv_node1 = nn.Conv2d(320, 128, (1, 1))
+        self.conv_node2 = nn.Conv2d(1280, 128, (1, 1))
+        self.prelu = nn.PReLU()
+        self.fc_landmark = nn.Linear(320, points_num * 2)
+        self._initialize_weights()
+
+    def forward(self, images):
+        x = self.features(images)
+        node1 = self.conv_node1(x)
+        node1 = node1.mean(3).mean(2)
+
+        x = self.last_block(x)
+        node2 = self.conv_node2(x)
+        node2 = node2.mean(3).mean(2)
+
+        x = F.avg_pool2d(x, (8, 8))
+        x = self.conv1_after_mbnet(x)
+        x = torch.flatten(x, start_dim=1, end_dim=3)
+        final = self.prelu(x)
+
+        end = torch.cat([node1, node2, final], dim=1)
+        landmark = self.fc_landmark(end)
+        return landmark
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                n = m.weight.size(1)
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()
+
+
+class AddCoords(nn.Module):
+    def __init__(self, with_r=False):
+        super(AddCoords, self).__init__()
+        self.with_r = with_r
+
+    def forward(self, x):
+        B, _, x_dim, y_dim = x.size()
+        xx_channel = torch.arange(x_dim).repeat(B, 1, y_dim, 1).type_as(x)
+        yy_cahnnel = torch.arange(y_dim).repeat(B, 1, x_dim, 1).permute(0, 1, 3, 2).type_as(x)
+        xx_channel = xx_channel.float() / (x_dim - 1)
+        yy_cahnnel = yy_cahnnel.float() / (y_dim - 1)
+        xx_channel = xx_channel * 2 - 1
+        yy_cahnnel = yy_cahnnel * 2 - 1
+        ret = torch.cat([x, xx_channel, yy_cahnnel], dim=1)
+        if self.with_r:
+            rr = torch.sqrt(xx_channel ** 2 + yy_cahnnel ** 2)
+            ret = torch.cat([ret, rr], dim=1)
+        return ret
+
+
+class CoordConv(nn.Module):
+    def __init__(self, input_nc, output_nc, with_r=False, use_spect=False, **kwargs):
+        super(CoordConv, self).__init__()
+        self.addcoords = AddCoords(with_r=with_r)
+        input_nc = input_nc + 2
+        if with_r:
+            input_nc = input_nc + 1
+        self.conv = spectral_norm(nn.Conv2d(input_nc, output_nc, **kwargs), use_spect)
+
+    def forward(self, x):
+        ret = self.addcoords(x)
+        ret = self.conv(ret)
+        return ret
+
+
+def coord_conv(input_nc, output_nc, use_spect=False, use_coord=False, with_r=False, **kwargs):
+    if use_coord:
+        return CoordConv(input_nc, output_nc, with_r, use_spect, **kwargs)
+    else:
+        return spectral_norm(nn.Conv2d(input_nc, output_nc, **kwargs), use_spect)
+
+
+class ResBlock(nn.Module):
+    def __init__(self, input_nc, output_nc, hidden_nc=None, norm_layer=nn.BatchNorm2d, nonlinearity=nn.LeakyReLU(),
+                 sample_type='none', use_spect=False, use_coord=False):
+        super(ResBlock, self).__init__()
+        hidden_nc = output_nc if hidden_nc is None else hidden_nc
+        self.sample = True
+        if sample_type == 'none':
+            self.sample = False
+        elif sample_type == 'up':
+            output_nc = output_nc * 4
+            self.pool = nn.PixelShuffle(upscale_factor=2)
+        elif sample_type == 'down':
+            self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
+        else:
+            raise NotImplementedError('sample type [%s] is not found' % sample_type)
+
+        kwargs = {'kernel_size': 3, 'stride': 1, 'padding': 1}
+        kwargs_short = {'kernel_size': 1, 'stride': 1, 'padding': 0}
+        self.conv1 = coord_conv(input_nc, hidden_nc, use_spect, use_coord, **kwargs)
+        self.conv2 = coord_conv(hidden_nc, output_nc, use_spect, use_coord, **kwargs)
+        self.bypass = coord_conv(input_nc, output_nc, use_spect, use_coord, **kwargs_short)
+
+        if type(norm_layer) == type(None):
+            self.model = nn.Sequential(nonlinearity, self.conv1, nonlinearity, self.conv2, )
+        else:
+            self.model = nn.Sequential(norm_layer(input_nc), nonlinearity, self.conv1, norm_layer(hidden_nc),
+                                       nonlinearity, self.conv2, )
+        self.shortcut = nn.Sequential(self.bypass, )
+
+    def forward(self, x):
+        if self.sample:
+            out = self.pool(self.model(x)) + self.pool(self.shortcut(x))
+        else:
+            out = self.model(x) + self.shortcut(x)
+        return out
+
+
+class Auto_Attn(nn.Module):
+    def __init__(self, input_nc, norm_layer=nn.InstanceNorm2d):
+        super(Auto_Attn, self).__init__()
+        self.input_nc = input_nc
+        self.query_conv = nn.Conv2d(input_nc, input_nc // 4, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.alpha = nn.Parameter(torch.zeros(1))
+        self.softmax = nn.Softmax(dim=-1)
+        self.model = ResBlock(int(input_nc * 2), input_nc, input_nc, norm_layer=norm_layer, use_spect=True)
+
+    def forward(self, x, pre=None, mask=None):
+        B, C, W, H = x.size()
+        proj_query = self.query_conv(x).view(B, -1, W * H)
+        proj_key = proj_query
+        energy = torch.bmm(proj_query.permute(0, 2, 1), proj_key)
+        attention = self.softmax(energy)
+        proj_value = x.view(B, -1, W * H)
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = out.view(B, C, W, H)
+        out = self.gamma * out + x
+        if type(pre) != type(None):
+            context_flow = torch.bmm(pre.view(B, -1, W * H), attention.permute(0, 2, 1)).view(B, -1, W, H)
+            context_flow = self.alpha * (mask) * context_flow + (1 - mask) * pre
+            out = self.model(torch.cat([out, context_flow], dim=1))
+        return out, attention
         
 
 

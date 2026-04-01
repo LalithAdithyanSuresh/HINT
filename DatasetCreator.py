@@ -1,17 +1,20 @@
 import os
 
-# Update these paths to your actual locations
+# --- CONFIGURE THESE PATHS ---
 partition_file = './datasets/celeba/list_eval_partition.txt' 
-image_dir = './datasets/celeba/img_align_celeba' 
-output_dir = './datasets/celeba'
+image_dir      = './datasets/celeba/img_align_celeba' 
+train_mask_dir = './datasets/masks/train'   # Folder containing train masks
+test_mask_dir  = './datasets/masks/test'    # Folder containing test masks
+output_dir     = './datasets/celeba'
 
-# Create lists for each split
+os.makedirs(output_dir, exist_ok=True)
+
+# 1. Processing Image Partitions (Train/Val/Test)
 train_list, val_list, test_list = [], [], []
 
-print("Readings partition file...")
+print("Reading partition file...")
 with open(partition_file, 'r') as f:
     for line in f:
-        # Expected format: "filename partition_id" (e.g. "000001.jpg 0")
         parts = line.strip().split()
         if len(parts) < 2: continue
         
@@ -25,15 +28,30 @@ with open(partition_file, 'r') as f:
         elif split_id == '2':
             test_list.append(full_path)
 
-print(f"Stats: Train={len(train_list)}, Val={len(val_list)}, Test={len(test_list)}")
+# 2. Scanning Mask Folders
+print("Generating mask lists from folders...")
+def get_all_mask_paths(mask_dir):
+    paths = []
+    if os.path.exists(mask_dir):
+        for f in os.listdir(mask_dir):
+            if f.endswith(('.jpg', '.png', '.jpeg')):
+                paths.append(os.path.abspath(os.path.join(mask_dir, f)))
+    return sorted(paths)
 
-# Save flist files
+train_masks = get_all_mask_paths(train_mask_dir)
+test_masks  = get_all_mask_paths(test_mask_dir)
+
+# 3. Saving all flist files
 def save_flist(flist, name):
-    with open(os.path.join(output_dir, name), 'w') as f:
+    save_path = os.path.join(output_dir, name)
+    with open(save_path, 'w') as f:
         f.write('\n'.join(flist))
+    print(f"Saved: {save_path} ({len(flist)} entries)")
 
 save_flist(train_list, 'celeba_train.flist')
 save_flist(val_list, 'celeba_val.flist')
 save_flist(test_list, 'celeba_test.flist')
+save_flist(train_masks, 'masks_train.flist')
+save_flist(test_masks, 'masks_test.flist')
 
-print(f"Success! Generated flists in {output_dir}")
+print("\nAll flist files generated successfully!")

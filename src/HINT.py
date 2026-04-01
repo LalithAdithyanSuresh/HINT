@@ -88,16 +88,20 @@ class HINT():
 
 
     def train(self):
-        wandb.watch(self.inpaint_model, self.psnr, log='all', log_freq=10)
         
+        wandb.watch(self.inpaint_model, self.psnr, log='all', log_freq=10)
         train_loader = DataLoader(
             dataset=self.train_dataset,
             batch_size=self.config.BATCH_SIZE,
-            num_workers=4,
+            num_workers=10,
             drop_last=True,
             shuffle=True
         )
-
+        print(f"DEBUG: I found {len(train_loader.dataset)} valid image-mask pairs to train!")
+        print("\n" + "="*40)
+        print("ULITMATE DEBUG MODE")
+        print(f"Total images in dataset: {len(train_loader.dataset)}")
+        print(f"Total batches in loader: {len(train_loader)}")
         epoch = 0
         keep_training = True
         model = self.config.MODEL
@@ -117,15 +121,28 @@ class HINT():
                     self.landmark_model.train()
 
                 if model == 2:
-                    if self.config.USE_LANDMARKS:
-                        images, landmarks_gt, masks = self.cuda(*items)
-                        landmark_map = self.generate_landmark_map(landmarks_gt)
-                    else:
+                    # Safely unpack what the dataloader gives us
+                    if len(items) == 2:
                         images, masks = self.cuda(*items)
+                    else:
+                        images, landmarks_gt, masks = self.cuda(*items)
+
+                    if self.config.USE_LANDMARKS:
+                        # THE LAFIN FUSION: Predict landmarks live if GT isn't provided
+                        if len(items) == 2 and self.landmark_model is not None:
+                            with torch.no_grad():
+                                landmark_pred = self.landmark_model(images, masks)
+                                landmark_pred = landmark_pred.reshape(-1, self.config.LANDMARK_POINTS, 2).long()
+                                landmark_map = self.generate_landmark_map(landmark_pred)
+                        else:
+                            landmark_map = self.generate_landmark_map(landmarks_gt)
+                    else:
                         landmark_map = None
 
+                    # Catch the new gen_sym_loss here!
+                    outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss, gen_sym_loss = self.inpaint_model.process(images, landmark_map, masks)
+
                     # inpaint model
-                    outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss= self.inpaint_model.process(images, landmark_map, masks)
                     outputs_merged = (outputs_img * masks) + (images * (1-masks))
 
                     psnr = self.psnr(self.postprocess(images), self.postprocess(outputs_merged))

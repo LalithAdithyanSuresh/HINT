@@ -103,10 +103,12 @@ class InpaintingModel(BaseModel):
 
         outputs_img = self(images, landmarks, masks)
 
-        
         gen_loss = 0
         dis_loss = 0
 
+        # Fix the LaFIn crash by defining these globally for the discriminator
+        dis_input_real = images
+        dis_input_fake = outputs_img.detach()
 
         # discriminator loss
         if self.config.USE_LANDMARKS:
@@ -120,43 +122,45 @@ class InpaintingModel(BaseModel):
         dis_fake_loss = self.adversarial_loss(dis_fake, False, True)
         dis_loss += (dis_real_loss + dis_fake_loss) / 2
 
-
         # generator adversarial loss
         gen_input_fake = outputs_img
         if self.config.USE_LANDMARKS:
             gen_fake, _ = self.discriminator(torch.cat((gen_input_fake, landmarks), dim=1))
         else:
             gen_fake, _ = self.discriminator(gen_input_fake)
+            
         gen_gan_loss = self.adversarial_loss(gen_fake, True, False) * self.config.INPAINT_ADV_LOSS_WEIGHT
         gen_loss += gen_gan_loss
 
-
-        
         gen_l1_loss = self.l1_loss(outputs_img, images) * self.config.L1_LOSS_WEIGHT / torch.mean(masks)
         gen_loss += gen_l1_loss
 
-
         # generator perceptual loss
-        gen_content_loss = self.perceptual_loss(outputs_img, images)
-        gen_content_loss = gen_content_loss * self.config.CONTENT_LOSS_WEIGHT
+        gen_content_loss = self.perceptual_loss(outputs_img, images) * self.config.CONTENT_LOSS_WEIGHT
         gen_loss += gen_content_loss
 
-
         # generator style loss
-        gen_style_loss = self.style_loss(outputs_img * masks, images * masks)
-        gen_style_loss = gen_style_loss * self.config.STYLE_LOSS_WEIGHT
+        gen_style_loss = self.style_loss(outputs_img * masks, images * masks) * self.config.STYLE_LOSS_WEIGHT
         gen_loss += gen_style_loss
 
-        #############################
+        # ---> THE SYMMETRY LOSS <---
+        # Flip the generated image horizontally
+        flipped_outputs = torch.flip(outputs_img, dims=[3])
+        sym_weight = getattr(self.config, 'SYMMETRY_LOSS_WEIGHT', 10.0)
+        
+        # Penalize the model if the left side of the face doesn't match the right side
+        gen_sym_loss = self.l1_loss(outputs_img, flipped_outputs) * sym_weight
+        gen_loss += gen_sym_loss
+        # ---------------------------
 
         # create logs
         logs = [
-            ("gLoss",gen_loss.item()),
-            ("dLoss",dis_loss.item())
+            ("gLoss", gen_loss.item()),
+            ("dLoss", dis_loss.item()),
+            ("symLoss", gen_sym_loss.item())
         ]
 
-        return outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss
-
+        return outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss, gen_sym_loss
 
     def forward(self, images, landmarks, masks):
         images_masked = (images * (1 - masks).float()) + masks

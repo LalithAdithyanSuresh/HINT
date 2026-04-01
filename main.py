@@ -1,6 +1,7 @@
 import os
 import cv2
 import random
+import math
 import numpy as np
 import torch
 import argparse
@@ -16,7 +17,7 @@ def main(mode=None):
         mode (int): 1: train, 2: test, reads from config file if not specified
     """
     config = load_config(mode)
-    with wandb.init(project='Rstormer', config=load_config(mode)):
+    with wandb.init(project='HINT_Symmetry', config=load_config(mode), entity = 'lalithadithyansuresh-snuch'):
 
         # cuda visble devices
         os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(e) for e in config.GPU)

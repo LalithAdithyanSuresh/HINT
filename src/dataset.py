@@ -166,24 +166,20 @@ class Dataset(torch.utils.data.Dataset):
         img = np.array(Image.fromarray(img).resize((height, width)))
         return img
 
-    def load_flist(self, flist):
+    def load_flist(self,flist):
         if isinstance(flist, list):
             return flist
-
-        # flist: image file path, image directory path, text file flist path
+            
+        # If it's a string, check if it's a text file
         if isinstance(flist, str):
-            if os.path.isdir(flist):
-                flist = list(glob.glob(flist + '/*.jpg')) + list(glob.glob(flist + '/*.png'))
-                flist.sort()
-                return flist
-
-            if os.path.isfile(flist):
-                try:
-                    return np.genfromtxt(flist, dtype=np.str, encoding='utf-8')
-                except Exception as e:
-                    print(e)
-                    return [flist]
-        
+            if flist.endswith('.flist') or flist.endswith('.txt'):
+                with open(flist, 'r', encoding='utf-8') as f:
+                    # Read all lines, strip whitespace, and ignore empty lines
+                    return [line.strip() for line in f if line.strip()]
+            else:
+                # If it's not a text file, assume it's a single image path
+                return [flist]
+                
         return []
 
     def create_iterator(self, batch_size):

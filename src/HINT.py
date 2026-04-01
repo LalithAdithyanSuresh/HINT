@@ -207,12 +207,17 @@ class HINT():
         test_loader = DataLoader(
             dataset=self.test_dataset,
             batch_size=self.config.BATCH_SIZE,
+            num_workers=4,
+            shuffle=False
         )
         
         psnr_list = []
         ssim_list = []
         l1_list = []
         lpips_list = []
+        nme_list = []
+
+        cal_mean_nme = self.cal_mean_nme_tracker()
         
         print('here')
         index = 0
@@ -262,9 +267,28 @@ class HINT():
                     l1_loss = torch.nn.functional.l1_loss(outputs_merged[i], images[i], reduction='mean').item()
                     l1_list.append(l1_loss)
 
+                    # NME Calculation
+                    if self.config.USE_LANDMARKS:
+                        # If we predicted landmarks (Mode 3 logic or if model 2 uses predictor)
+                        if 'landmark_pred' in locals():
+                            nme = self.cal_nme(landmarks_gt[i], landmark_pred[i])
+                            nme_list.append(nme)
+                            cal_mean_nme(nme)
+                        else:
+                            # If we are using ground truth for the map, NME is effectively for the GT input (0)
+                            # or we can evaluate the detector if available
+                            if self.landmark_model is not None:
+                                landmark_eval = self.landmark_model(images[i].unsqueeze(0), masks[i].unsqueeze(0)).reshape(self.config.LANDMARK_POINTS, 2)
+                                nme = self.cal_nme(landmarks_gt[i], landmark_eval)
+                                nme_list.append(nme)
+                                cal_mean_nme(nme)
+
                     sample_name = self.test_dataset.load_name(index * self.config.BATCH_SIZE + i)[:-4] + '.png'
-                    print("Sample {}: psnr:{:.2f} ssim:{:.4f} l1:{:.4f} lpips:{:.4f} {}".format(
-                        sample_name, sample_psnr, sample_ssim, l1_loss, pl, len(ssim_list)))
+                    metric_str = "Sample {}: psnr:{:.2f} ssim:{:.4f} l1:{:.4f} lpips:{:.4f}".format(
+                        sample_name, sample_psnr, sample_ssim, l1_loss, pl)
+                    if self.config.USE_LANDMARKS and nme_list:
+                        metric_str += " nme:{:.4f} mean_nme:{:.4f}".format(nme_list[-1], cal_mean_nme.mean_nme)
+                    print(metric_str + " {}".format(len(ssim_list)))
 
                     # Save individual results
                     path_masked = os.path.join(self.results_path, self.model_name, 'masked')
@@ -295,8 +319,11 @@ class HINT():
             index += 1
 
         print('\nEnd Testing')
-        print('Average PSNR: {:.4f}, SSIM: {:.4f}, L1: {:.4f}, LPIPS: {:.4f}'.format(
-            np.average(psnr_list), np.average(ssim_list), np.average(l1_list), np.average(lpips_list)))
+        final_str = 'Average PSNR: {:.4f}, SSIM: {:.4f}, L1: {:.4f}, LPIPS: {:.4f}'.format(
+            np.average(psnr_list), np.average(ssim_list), np.average(l1_list), np.average(lpips_list))
+        if nme_list:
+            final_str += ', Average NME: {:.4f}'.format(np.average(nme_list))
+        print(final_str)
 
 
 
@@ -345,7 +372,30 @@ class HINT():
 
         return psnr, ssim
     
-    class cal_mean_nme():
+    def cal_nme(self, landmarks_gt, landmarks_pred):
+        # landmarks are [points, 2] tensors
+        landmarks_gt = landmarks_gt.float()
+        landmarks_pred = landmarks_pred.float()
+        
+        if self.config.LANDMARK_POINTS == 68:
+            # Inter-ocular distance normalization (inner corners of eyes)
+            # Index 36: left eye outer corner, 45: right eye outer corner in 0-indexed CelebA-68
+            point1 = landmarks_gt[36, :]
+            point2 = landmarks_gt[45, :]
+        elif self.config.LANDMARK_POINTS == 98:
+            point1 = landmarks_gt[60, :]
+            point2 = landmarks_gt[72, :]
+        else:
+            distance = 1.0
+            
+        distance = torch.norm(point1 - point2).item()
+        if distance == 0: distance = 1.0
+        
+        # Calculate mean error across all points
+        error = torch.mean(torch.norm(landmarks_pred - landmarks_gt, dim=1)).item()
+        return error / distance
+    
+    class cal_mean_nme_tracker():
         sum = 0
         amount = 0
         mean_nme = 0

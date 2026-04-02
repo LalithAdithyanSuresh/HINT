@@ -16,6 +16,9 @@ import wandb
 import lpips
 import torchvision
 import time
+from torch.cuda.amp import autocast, GradScaler
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
 
 '''
 This repo is modified basing on Edge-Connect
@@ -43,6 +46,7 @@ class HINT():
 
         self.psnr = PSNR(255.0).to(config.DEVICE)
         self.cal_mae = nn.L1Loss(reduction='sum')
+        self.scaler = GradScaler(enabled=getattr(config, 'USE_AMP', False))
 
         #train mode
         if self.config.MODE == 1:
@@ -93,7 +97,8 @@ class HINT():
         train_loader = DataLoader(
             dataset=self.train_dataset,
             batch_size=self.config.BATCH_SIZE,
-            num_workers=10,
+            num_workers=20, # Optimized for 24-core CPU
+            pin_memory=True, # GPU optimization
             drop_last=True,
             shuffle=True
         )
@@ -140,7 +145,8 @@ class HINT():
                         landmark_map = None
 
                     # Catch the new gen_sym_loss here!
-                    outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss, gen_sym_loss = self.inpaint_model.process(images, landmark_map, masks)
+                    with autocast(enabled=getattr(self.config, 'USE_AMP', False)):
+                        outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss, gen_sym_loss = self.inpaint_model.process(images, landmark_map, masks)
 
                     # inpaint model
                     outputs_merged = (outputs_img * masks) + (images * (1-masks))
@@ -151,7 +157,8 @@ class HINT():
                     logs.append(('psnr', psnr.item()))
                     logs.append(('mae', mae.item()))
 
-                    self.inpaint_model.backward(gen_loss, dis_loss)
+                    # Using scaler for backward pass
+                    self.inpaint_model.backward(gen_loss, dis_loss, scaler=self.scaler if getattr(self.config, 'USE_AMP', False) else None)
                     iteration = self.inpaint_model.iteration
 
                 if iteration >= max_iteration:

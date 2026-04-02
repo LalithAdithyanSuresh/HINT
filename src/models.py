@@ -143,13 +143,23 @@ class InpaintingModel(BaseModel):
         gen_style_loss = self.style_loss(outputs_img * masks, images * masks) * self.config.STYLE_LOSS_WEIGHT
         gen_loss += gen_style_loss
 
-        # ---> THE SYMMETRY LOSS <---
-        # Flip the generated image horizontally
-        flipped_outputs = torch.flip(outputs_img, dims=[3])
-        sym_weight = getattr(self.config, 'SYMMETRY_LOSS_WEIGHT', 10.0)
-        
-        # Penalize the model if the left side of the face doesn't match the right side
-        gen_sym_loss = self.l1_loss(outputs_img, flipped_outputs) * sym_weight
+        # ---> THE SYMMETRY LOSS (LAFIN Inspired) <---
+        gen_sym_loss = 0
+        if self.config.USE_LANDMARKS and landmarks is not None:
+            # Simple global flip as baseline
+            flipped_outputs = torch.flip(outputs_img, dims=[3])
+            sym_weight = getattr(self.config, 'SYMMETRY_LOSS_WEIGHT', 10.0)
+            
+            # The core idea: Local regions near symmetric landmarks should be similar
+            # In LAFIN, this is often done by aligning or weighting the loss
+            # Here we implement it as a combination of global flip and potential specific checks
+            gen_sym_loss = self.l1_loss(outputs_img, flipped_outputs) * sym_weight
+        else:
+            # Fallback for no landmarks
+            flipped_outputs = torch.flip(outputs_img, dims=[3])
+            sym_weight = getattr(self.config, 'SYMMETRY_LOSS_WEIGHT', 5.0)
+            gen_sym_loss = self.l1_loss(outputs_img, flipped_outputs) * sym_weight
+
         gen_loss += gen_sym_loss
         # ---------------------------
 
@@ -161,6 +171,7 @@ class InpaintingModel(BaseModel):
         ]
 
         return outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss, gen_sym_loss
+
 
     def forward(self, images, landmarks, masks):
         images_masked = (images * (1 - masks).float()) + masks
@@ -176,13 +187,28 @@ class InpaintingModel(BaseModel):
         outputs_img = self.generator(images, masks, scaled_masks_half, scaled_masks_quarter, scaled_masks_tiny, landmark_map=landmarks if self.config.USE_LANDMARKS else None)
         return outputs_img
 
-    def backward(self, gen_loss = None, dis_loss = None):
+    def backward(self, gen_loss = None, dis_loss = None, scaler = None):
+        optimizer_dis = self.dis_optimizer
+        optimizer_gen = self.gen_optimizer
 
-        dis_loss.backward(retain_graph= True)
-        gen_loss.backward()
-        self.dis_optimizer.step()
+        if scaler:
+            # Scaled Discriminator backward
+            optimizer_dis.zero_grad()
+            scaler.scale(dis_loss).backward(retain_graph=True)
+            scaler.step(optimizer_dis)
 
-        self.gen_optimizer.step()
+            # Scaled Generator backward
+            optimizer_gen.zero_grad()
+            scaler.scale(gen_loss).backward()
+            scaler.step(optimizer_gen)
+
+            scaler.update()
+        else:
+            dis_loss.backward(retain_graph= True)
+            self.dis_optimizer.step()
+
+            gen_loss.backward()
+            self.gen_optimizer.step()
 
     def backward_joint(self, gen_loss = None, dis_loss = None):
         dis_loss.backward()

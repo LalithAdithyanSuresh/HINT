@@ -1,41 +1,44 @@
 MODE: 1             # 1: train, 2: test
 MODEL: 2            # 2: inpaint model
-USE_LANDMARKS: 1         # 1: Turn LaFIn on!
-SYMMETRY_LOSS_WEIGHT: 10.0    # How strictly to enforce symmetry   # 0: do not use landmarks, 1: use landmarks
-MASK: 3           # 0: no mask, 1: random block, 2: center mask, 3: external, 4: 50% external, 50% random block, 5: (50% no mask, 25% ramdom block, 25% external) 6: external non-random
+USE_LANDMARKS: 1    # 1: Turn LaFIn on!
+USE_AMP: 1          # 1: Enable Automatic Mixed Precision (Optimized for RTX 5000)
+SYMMETRY_LOSS_WEIGHT: 10.0    # Symmetry architecture architecture loss weight
+MASK: 3             # 0: no mask, 1: random block, 2: center mask, 3: external, 4: 50% external, 50% random block, 5: 50% no mask
 SEED: 10            # random seed
 GPU: [0]            # list of gpu ids
-AUGMENTATION_TRAIN: 0 # 1: use augmentation to train landmark predictor  0:not use
+AUGMENTATION_TRAIN: 1 # use augmentation for better symmetry training
 
-TRAIN_INPAINT_IMAGE_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/celeba_train.flist
-TEST_INPAINT_IMAGE_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/celeba_val.flist
+TRAIN_INPAINT_IMAGE_FLIST: ./dataset/celeba_train.flist
+VAL_INPAINT_IMAGE_FLIST: ./dataset/celeba_val.flist
+TEST_INPAINT_IMAGE_FLIST: ./dataset/celeba_test.flist
 
-TRAIN_MASK_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/masks_train.flist
-TEST_MASK_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/masks_test.flist
+TRAIN_LANDMARK_LANDMARK_FLIST: ./dataset/celeba_train_landmarks.flist
+VAL_LANDMARK_LANDMARK_FLIST: ./dataset/celeba_val_landmarks.flist
+TEST_LANDMARK_LANDMARK_FLIST: ./dataset/celeba_test_landmarks.flist
+
+TRAIN_MASK_FLIST: ./dataset/masks_train.flist
+TEST_MASK_FLIST: ./dataset/masks_test.flist
 
 LR: 0.0001                    # learning rate
 D2G_LR: 0.1                   # discriminator/generator learning rate ratio
 BETA1: 0.9                    # adam optimizer beta1
-BETA2: 0.999                    # adam optimizer beta2
+BETA2: 0.999                  # adam optimizer beta2
 WD: 0
 LR_Decay: 1
 
-
-BATCH_SIZE: 1               # input batch size for training
-INPUT_SIZE: 256               # input image size for training 0 for original size
-MAX_ITERS: 300001                 # maximum number of iterations to train the model
-
-
+BATCH_SIZE: 16                # Optimized for RTX 5000 (24GB VRAM)
+INPUT_SIZE: 256
+MAX_ITERS: 2000000
 
 L1_LOSS_WEIGHT: 1             # l1 loss weight
 STYLE_LOSS_WEIGHT: 250        # style loss weight
 CONTENT_LOSS_WEIGHT: 0.1      # perceptual loss weight
 INPAINT_ADV_LOSS_WEIGHT: 0.01 # adversarial loss weight
 
-
 GAN_LOSS: lsgan               # nsgan | lsgan | hinge
 GAN_POOL_SIZE: 0              # fake images pool size
 
-SAVE_INTERVAL: 1000           # how many iterations to wait before saving model (0: never)
-EVAL_INTERVAL: 0              # how many iterations to wait before model evaluation (0: never)
-LOG_INTERVAL: 100              # how many iterations to wait before logging training status (0: never)
+SAVE_INTERVAL: 1000           # auto-save model
+EVAL_INTERVAL: 0              
+LOG_INTERVAL: 10              # Frequent logging for visibility
+VERBOSE: 1                    # Show extra stats in progbar

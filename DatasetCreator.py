@@ -1,14 +1,11 @@
 import os
 
-# --- CONFIGURE THESE PATHS ---
-partition_file = './datasets/celeba/list_eval_partition.txt' 
-image_dir      = './datasets/celeba/img_align_celeba' 
-train_mask_dir = './datasets/masks/train'   # Folder containing train masks
-test_mask_dir  = './datasets/masks/test'    # Folder containing test masks
-output_dir     = './datasets/celeba'
-
-os.makedirs(output_dir, exist_ok=True)
-
+# Update these paths to your actual locations
+partition_file = '/mnt/datadrive/inpaint/CelebA/Eval/list_eval_partition.txt'
+image_dir = '/mnt/datadrive/inpaint/CelebA/test'
+output_dir = '/home/snuc/Desktop/HINTwithSymmetry/HINT/dataset'
+test_mask_dir = '/mnt/datadrive/inpaint/iregularmask/test_mask/mask/testing_mask_dataset'
+train_mask_dir = '/mnt/datadrive/inpaint/iregularmask/irregular_mask/disocclusion_img_mask'
 # 1. Processing Image Partitions (Train/Val/Test)
 train_list, val_list, test_list = [], [], []
 

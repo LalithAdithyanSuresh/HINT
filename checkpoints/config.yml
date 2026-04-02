@@ -1,15 +1,17 @@
 MODE: 1             # 1: train, 2: test
 MODEL: 2            # 2: inpaint model
+USE_LANDMARKS: 1         # 1: Turn LaFIn on!
+SYMMETRY_LOSS_WEIGHT: 10.0    # How strictly to enforce symmetry   # 0: do not use landmarks, 1: use landmarks
 MASK: 3           # 0: no mask, 1: random block, 2: center mask, 3: external, 4: 50% external, 50% random block, 5: (50% no mask, 25% ramdom block, 25% external) 6: external non-random
 SEED: 10            # random seed
 GPU: [0]            # list of gpu ids
 AUGMENTATION_TRAIN: 0 # 1: use augmentation to train landmark predictor  0:not use
 
-TRAIN_INPAINT_IMAGE_FLIST: 
-TEST_INPAINT_IMAGE_FLIST: 
+TRAIN_INPAINT_IMAGE_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/celeba_train.flist
+TEST_INPAINT_IMAGE_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/celeba_val.flist
 
-TRAIN_MASK_FLIST: 
-TEST_MASK_FLIST: 
+TRAIN_MASK_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/masks_train.flist
+TEST_MASK_FLIST: /home/snuc/Desktop/HINTwithSymmetry/HINT/dataset/masks_test.flist
 
 LR: 0.0001                    # learning rate
 D2G_LR: 0.1                   # discriminator/generator learning rate ratio
@@ -19,7 +21,7 @@ WD: 0
 LR_Decay: 1
 
 
-BATCH_SIZE: 4               # input batch size for training
+BATCH_SIZE: 1               # input batch size for training
 INPUT_SIZE: 256               # input image size for training 0 for original size
 MAX_ITERS: 300001                 # maximum number of iterations to train the model
 
